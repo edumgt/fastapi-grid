@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="ko">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>게시판 샘플 (AG Grid + Tailwind, HTML/API 분리)</title>
+
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- AG Grid Community (구조 CSS만 사용, 테마 CSS는 불러오지 않음) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+
+    <style>
+        /* ✅ ag-theme-* 미사용. 최소한의 커스텀 스타일로 게시판 느낌 구현 */
+        #gridWrap .ag-root-wrapper {
+            border-radius: 0.75rem;
+            overflow: hidden;
+        }
+
+        #gridWrap .ag-root-wrapper,
+        #gridWrap .ag-root {
+            border: 1px solid #e5e7eb;
+        }
+
+        #gridWrap .ag-header {
+            background: #f9fafb;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        #gridWrap .ag-header-cell {
+            font-weight: 700;
+            color: #111827;
+        }
+
+        #gridWrap .ag-row {
+            border-bottom: 1px solid #f3f4f6;
+        }
+
+        #gridWrap .ag-row:last-child {
+            border-bottom: none;
+        }
+
+        #gridWrap .ag-cell {
+            color: #111827;
+        }
+
+        #gridWrap .ag-row-hover {
+            background: #f9fafb;
+        }
+
+        #gridWrap .ag-row-selected {
+            background: #eef2ff !important;
+        }
+
+        #grid {
+            height: 520px;
+            width: 100%;
+            background: #fff;
+        }
+
+        /* modal */
+        .modal-backdrop {
+            background: rgba(0, 0, 0, .35);
+        }
+    </style>
+</head>
+
+<body class="bg-gray-50 text-gray-900">
+    <div class="max-w-6xl mx-auto p-6 space-y-4">
+        <!-- Header -->
+        <div class="flex items-start justify-between gap-3">
+            <div>
+                <h1 class="text-2xl font-extrabold tracking-tight">게시판</h1>
+                <p class="text-sm text-gray-500 mt-1">AG Grid(테마 미사용) + Tailwind / HTML·API 분리 실행</p>
+                <p class="text-xs text-gray-400 mt-1">API: <span id="apiBaseView"></span></p>
+            </div>
+            <div class="flex gap-2">
+                <button id="btnNew"
+                    class="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold hover:bg-indigo-700 active:scale-[0.99]">
+                    글쓰기
+                </button>
+            </div>
+        </div>
+
+        <!-- Toolbar -->
+        <div class="flex flex-wrap items-center gap-2 bg-white border border-gray-200 rounded-2xl p-3">
+            <div class="flex-1 min-w-[240px]">
+                <input id="q" type="text" placeholder="검색: 제목/작성자/본문"
+                    class="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+            </div>
+
+            <select id="sort" class="px-3 py-2 rounded-xl border border-gray-200 bg-white">
+                <option value="created_at:desc">최신순</option>
+                <option value="views:desc">조회수순</option>
+                <option value="id:desc">번호 내림차순</option>
+                <option value="id:asc">번호 오름차순</option>
+            </select>
+
+            <select id="size" class="px-3 py-2 rounded-xl border border-gray-200 bg-white">
+                <option value="10">10개</option>
+                <option value="20">20개</option>
+                <option value="50">50개</option>
+            </select>
+
+            <button id="btnSearch"
+                class="px-4 py-2 rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 font-semibold">
+                검색
+            </button>
+            <button id="btnReset"
+                class="px-4 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 font-semibold">
+                초기화
+            </button>
+        </div>
+
+        <!-- Grid -->
+        <div id="gridWrap" class="bg-white rounded-2xl">
+            <div id="grid"></div>
+
+            <!-- Pagination -->
+            <div class="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+                <div class="text-sm text-gray-500">
+                    <span id="pageInfo">-</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="btnPrev"
+                        class="px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50"
+                        disabled>이전</button>
+                    <button id="btnNext"
+                        class="px-3 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50"
+                        disabled>다음</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-xs text-gray-400">
+            TIP) 행을 더블클릭하면 상세보기(조회수 증가). 단일 클릭은 선택만.
+        </div>
+    </div>
+
+    <!-- Detail / Edit Modal -->
+    <div id="modal" class="fixed inset-0 hidden items-center justify-center z-50">
+        <div class="absolute inset-0 modal-backdrop"></div>
+
+        <div class="relative w-[min(720px,92vw)] bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+            <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <div>
+                    <h2 id="modalTitle" class="text-lg font-extrabold">상세</h2>
+                    <p id="modalSub" class="text-xs text-gray-500 mt-0.5"></p>
+                </div>
+                <button id="btnClose" class="p-2 rounded-xl hover:bg-gray-50">✕</button>
+            </div>
+
+            <div class="p-5 space-y-3">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label class="text-xs font-semibold text-gray-600">제목</label>
+                        <input id="fTitle" type="text"
+                            class="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+                    </div>
+                    <div>
+                        <label class="text-xs font-semibold text-gray-600">작성자</label>
+                        <input id="fAuthor" type="text"
+                            class="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+                    </div>
+                </div>
+
+                <div>
+                    <label class="text-xs font-semibold text-gray-600">내용</label>
+                    <textarea id="fContent" rows="9"
+                        class="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-200"></textarea>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between px-5 py-4 border-t border-gray-100 bg-gray-50">
+                <div class="text-xs text-gray-500" id="meta"></div>
+                <div class="flex gap-2">
+                    <button id="btnDelete"
+                        class="px-4 py-2 rounded-xl border border-rose-200 bg-white text-rose-600 font-semibold hover:bg-rose-50 hidden">
+                        삭제
+                    </button>
+                    <button id="btnSave"
+                        class="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold hover:bg-indigo-700">
+                        저장
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // =============================
+        // Config (HTML·API 분리 실행)
+        // =============================
+        // FastAPI 서버 주소로 바꾸세요.
+        const API_BASE = "http://127.0.0.1:8000";
+        document.getElementById("apiBaseView").textContent = API_BASE;
+
+        const $ = (id) => document.getElementById(id);
+
+        // ✅ window.location.origin 절대 사용하지 않음 (서버 분리 대비)
+        function apiUrl(path) {
+            const base = API_BASE.endsWith("/") ? API_BASE : API_BASE + "/";
+            const cleanPath = path.startsWith("/") ? path.slice(1) : path;
+            return new URL(cleanPath, base);
+        }
+
+        let page = 1;
+        let size = 10;
+        let total = 0;
+        let currentPost = null;
+
+        // ✅ Grid API는 항상 여기로만 관리
+        let gridApi = null;
+
+        // =============================
+        // AG Grid
+        // =============================
+        const columnDefs = [
+            { headerName: "번호", field: "id", width: 90, sortable: false },
+            { headerName: "제목", field: "title", flex: 1, minWidth: 260 },
+            { headerName: "작성자", field: "author", width: 140 },
+            { headerName: "등록일", field: "created_at", width: 170, valueFormatter: (p) => fmtDate(p.value) },
+            { headerName: "조회", field: "views", width: 110 },
+        ];
+
+        const gridOptions = {
+            columnDefs,
+            rowData: [],
+            rowSelection: "single",
+            animateRows: true,
+            defaultColDef: { resizable: true },
+
+            // new Grid(...) 경로에서 api 확보
+            onGridReady: (params) => {
+                gridApi = params.api;
+            },
+
+            onRowDoubleClicked: async (e) => {
+                const id = e.data?.id;
+                if (!id) return;
+                const post = await apiGetPost(id, true);
+                openModal("detail", post);
+                await load();
+            }
+        };
+
+        const gridDiv = $("grid");
+
+        // createGrid(...) 경로에서는 리턴값이 GridApi인 경우가 많음
+        if (agGrid.createGrid) {
+            const maybeApi = agGrid.createGrid(gridDiv, gridOptions);
+            // 혹시 버전에 따라 { api, columnApi } 형태로 올 경우까지 방어
+            gridApi = maybeApi?.api ? maybeApi.api : maybeApi;
+        } else {
+            new agGrid.Grid(gridDiv, gridOptions);
+        }
+
+        // =============================
+        // Grid rowData setter (버전 호환)
+        // =============================
+        function setGridRowData(items) {
+            if (!gridApi) return;
+
+            // 최신 권장 방식
+            if (typeof gridApi.setGridOption === "function") {
+                gridApi.setGridOption("rowData", items);
+                return;
+            }
+
+            // 구버전 방식
+            if (typeof gridApi.setRowData === "function") {
+                gridApi.setRowData(items);
+                return;
+            }
+
+            console.warn("No supported method to set rowData on gridApi", gridApi);
+        }
+
+        const MIN_ROW_H = 28;  // 너무 작아지지 않게
+        const MAX_ROW_H = 64;  // 너무 커지지 않게
+
+        function fitRowHeightsToGrid() {
+            if (!gridApi) return;
+
+            const gridEl = document.getElementById("grid");
+            const headerEl = gridEl.querySelector(".ag-header");
+            const headerH = headerEl ? headerEl.offsetHeight : 40;
+
+            const bodyH = gridEl.clientHeight - headerH;
+            const rowCount =
+                (typeof gridApi.getDisplayedRowCount === "function")
+                    ? gridApi.getDisplayedRowCount()
+                    : 0;
+
+            if (!bodyH || !rowCount) return;
+
+            // 행 사이 보더/여유분 감안해서 약간 빼줌
+            const raw = Math.floor((bodyH - 2) / rowCount);
+            const rowH = Math.max(MIN_ROW_H, Math.min(MAX_ROW_H, raw));
+
+            // ✅ 버전 호환: setGridOption(rowHeight) 우선
+            if (typeof gridApi.setGridOption === "function") {
+                gridApi.setGridOption("rowHeight", rowH);
+            } else {
+                // 구버전
+                gridApi.setRowHeight?.(rowH);
+            }
+
+            // rowHeight 변경 반영
+            if (typeof gridApi.resetRowHeights === "function") {
+                gridApi.resetRowHeights();
+            }
+        }
+
+
+        // =============================
+        // API helpers
+        // =============================
+        async function apiListPosts() {
+            const q = $("q").value.trim();
+            const sort = $("sort").value;
+
+            const url = apiUrl("/api/posts");
+            url.searchParams.set("q", q);
+            url.searchParams.set("page", String(page));
+            url.searchParams.set("size", String(size));
+            url.searchParams.set("sort", sort);
+
+            const res = await fetch(url.toString());
+            if (!res.ok) throw new Error("list failed");
+            return res.json();
+        }
+
+        async function apiGetPost(id, incView) {
+            const url = apiUrl(`/api/posts/${id}`);
+            url.searchParams.set("inc_view", incView ? "true" : "false");
+
+            const res = await fetch(url.toString());
+            if (!res.ok) throw new Error("read failed");
+            return res.json();
+        }
+
+        async function apiCreatePost(payload) {
+            const res = await fetch(apiUrl("/api/posts").toString(), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) throw new Error("create failed");
+            return res.json();
+        }
+
+        async function apiUpdatePost(id, payload) {
+            const res = await fetch(apiUrl(`/api/posts/${id}`).toString(), {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) throw new Error("update failed");
+            return res.json();
+        }
+
+        async function apiDeletePost(id) {
+            const res = await fetch(apiUrl(`/api/posts/${id}`).toString(), { method: "DELETE" });
+            if (!res.ok) throw new Error("delete failed");
+            return res.json();
+        }
+
+        // =============================
+        // UI logic
+        // =============================
+        function fmtDate(v) {
+            if (!v) return "";
+            const d = new Date(v);
+            if (Number.isNaN(d.getTime())) return String(v);
+            const yy = d.getFullYear();
+            const mm = String(d.getMonth() + 1).padStart(2, "0");
+            const dd = String(d.getDate()).padStart(2, "0");
+            const hh = String(d.getHours()).padStart(2, "0");
+            const mi = String(d.getMinutes()).padStart(2, "0");
+            return `${yy}-${mm}-${dd} ${hh}:${mi}`;
+        }
+
+        function setPageInfo() {
+            const totalPages = Math.max(1, Math.ceil(total / size));
+            $("pageInfo").textContent = `총 ${total}건 · ${page} / ${totalPages} 페이지`;
+            $("btnPrev").disabled = page <= 1;
+            $("btnNext").disabled = page >= totalPages;
+        }
+
+        async function load() {
+            const data = await apiListPosts();
+            total = data.total;
+
+            setGridRowData(data.items);
+            setPageInfo();
+
+            // ✅ DOM 업데이트 이후 계산되도록 rAF로 한 번 늦춰서 적용
+            requestAnimationFrame(() => fitRowHeightsToGrid());
+        }
+
+        async function safeLoad() {
+            if (!gridApi) {
+                // Grid API 준비될 때까지 대기(0ms tick)
+                setTimeout(safeLoad, 0);
+                return;
+            }
+            await load();
+        }
+
+        // =============================
+        // Modal
+        // =============================
+        function showModal(show) {
+            const m = $("modal");
+            if (show) {
+                m.classList.remove("hidden");
+                m.classList.add("flex");
+            } else {
+                m.classList.add("hidden");
+                m.classList.remove("flex");
+            }
+        }
+
+        function openModal(mode, post) {
+            currentPost = post || null;
+
+            $("fTitle").value = post?.title || "";
+            $("fAuthor").value = post?.author || "";
+            $("fContent").value = post?.content || "";
+
+            if (mode === "new") {
+                $("modalTitle").textContent = "글쓰기";
+                $("modalSub").textContent = "새 게시글을 작성합니다.";
+                $("btnDelete").classList.add("hidden");
+                $("meta").textContent = "";
+            } else {
+                $("modalTitle").textContent = `상세 / 수정 (No.${post.id})`;
+                $("modalSub").textContent = "필드를 수정한 뒤 저장을 누르세요.";
+                $("btnDelete").classList.remove("hidden");
+                $("meta").textContent = `등록: ${fmtDate(post.created_at)} · 수정: ${fmtDate(post.updated_at)} · 조회: ${post.views}`;
+            }
+
+            showModal(true);
+        }
+
+        // =============================
+        // Events
+        // =============================
+        $("btnSearch").addEventListener("click", async () => {
+            page = 1;
+            await load();
+        });
+
+        $("btnReset").addEventListener("click", async () => {
+            $("q").value = "";
+            $("sort").value = "created_at:desc";
+            $("size").value = "10";
+            size = 10;
+            page = 1;
+            await load();
+        });
+
+        $("q").addEventListener("keydown", async (e) => {
+            if (e.key === "Enter") {
+                page = 1;
+                await load();
+            }
+        });
+
+        $("size").addEventListener("change", async () => {
+            size = parseInt($("size").value, 10);
+            page = 1;
+            await load();
+        });
+
+        $("sort").addEventListener("change", async () => {
+            page = 1;
+            await load();
+        });
+
+        $("btnPrev").addEventListener("click", async () => {
+            if (page > 1) page--;
+            await load();
+        });
+
+        $("btnNext").addEventListener("click", async () => {
+            const totalPages = Math.max(1, Math.ceil(total / size));
+            if (page < totalPages) page++;
+            await load();
+        });
+
+        $("btnNew").addEventListener("click", () => openModal("new", null));
+        $("btnClose").addEventListener("click", () => showModal(false));
+        $("modal").addEventListener("click", (e) => {
+            if (e.target === $("modal").children[0]) showModal(false);
+        });
+
+        $("btnSave").addEventListener("click", async () => {
+            const payload = {
+                title: $("fTitle").value.trim(),
+                author: $("fAuthor").value.trim(),
+                content: $("fContent").value.trim(),
+            };
+
+            if (!payload.title || !payload.author || !payload.content) {
+                alert("제목/작성자/내용을 모두 입력해 주세요.");
+                return;
+            }
+
+            try {
+                if (!currentPost) {
+                    await apiCreatePost(payload);
+                    showModal(false);
+                    page = 1;
+                    await load();
+                } else {
+                    await apiUpdatePost(currentPost.id, payload);
+                    showModal(false);
+                    await load();
+                }
+            } catch (err) {
+                console.error(err);
+                alert("저장 중 오류가 발생했습니다.");
+            }
+        });
+
+        $("btnDelete").addEventListener("click", async () => {
+            if (!currentPost) return;
+            if (!confirm(`삭제할까요? (No.${currentPost.id})`)) return;
+
+            try {
+                await apiDeletePost(currentPost.id);
+                showModal(false);
+                await load();
+            } catch (err) {
+                console.error(err);
+                alert("삭제 중 오류가 발생했습니다.");
+            }
+        });
+
+        // =============================
+        // initial
+        // =============================
+        safeLoad().catch((e) => {
+            console.error(e);
+            alert(
+                "API 서버에 연결할 수 없습니다.\n\n" +
+                "1) FastAPI 실행 여부 확인 (예: 8000 포트)\n" +
+                "2) index.html의 API_BASE 주소/포트 확인\n" +
+                "3) CORS 에러면 브라우저 콘솔 확인"
+            );
+        });
+    </script>
+</body>
+
+</html>

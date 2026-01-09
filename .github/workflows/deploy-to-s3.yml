@@ -24,4 +24,4 @@ jobs:
           aws-region: ap-northeast-2  # 예: ap-northeast-2
 
       - name: Sync to S3
-        run: aws s3 sync ./ s3://api-test22/ --delete --acl public-read
+        run: aws s3 sync ./web/index2.html s3://www.edumgt.co.kr

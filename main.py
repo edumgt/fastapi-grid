@@ -2,11 +2,26 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from threading import Lock
-from typing import List, Optional, Literal, Tuple
+from typing import List, Optional, Literal, Tuple, Iterable
 
 from fastapi import FastAPI, HTTPException, Query, Path, Body, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+SortField = Literal["id", "title", "author", "created_at", "updated_at", "views"]
+SortDir = Literal["asc", "desc"]
+
+ALLOWED_SORT_FIELDS: Tuple[SortField, ...] = (
+    "id",
+    "title",
+    "author",
+    "created_at",
+    "updated_at",
+    "views",
+)
+ALLOWED_SORT_DIRS: Tuple[SortDir, ...] = ("asc", "desc")
+DEFAULT_SORT: Tuple[SortField, SortDir] = ("created_at", "desc")
+SEED_COUNT = 35
 
 
 # =========================================================
@@ -176,7 +191,7 @@ def seed() -> None:
         if POSTS:
             return
         now = now_utc()
-        for i in range(1, 36):
+        for i in range(1, SEED_COUNT + 1):
             POSTS.append(
                 Post(
                     id=NEXT_ID,
@@ -201,22 +216,44 @@ def get_post_or_404(post_id: int) -> Post:
     raise HTTPException(status_code=404, detail="Post not found")
 
 
-SortField = Literal["id", "title", "author", "created_at", "updated_at", "views"]
-SortDir = Literal["asc", "desc"]
-
-
 def parse_sort(sort: str) -> Tuple[SortField, SortDir]:
     try:
         field_str, dir_str = sort.split(":")
         field = field_str.strip()
         direction = dir_str.strip().lower()
-        if field not in {"id", "title", "author", "created_at", "updated_at", "views"}:
+        if field not in ALLOWED_SORT_FIELDS:
             raise ValueError("invalid sort field")
-        if direction not in {"asc", "desc"}:
+        if direction not in ALLOWED_SORT_DIRS:
             raise ValueError("invalid sort direction")
         return field, direction  # type: ignore[return-value]
     except Exception:
-        return "created_at", "desc"
+        return DEFAULT_SORT
+
+
+def normalize_query(query: str) -> str:
+    return query.strip().lower()
+
+
+def filter_posts(items: Iterable[Post], query: str) -> List[Post]:
+    s = normalize_query(query)
+    if not s:
+        return list(items)
+    return [
+        p for p in items
+        if (s in p.title.lower() or s in p.author.lower() or s in p.content.lower())
+    ]
+
+
+def sort_posts(items: List[Post], sort: str) -> List[Post]:
+    field, direction = parse_sort(sort)
+    reverse = direction == "desc"
+    return sorted(items, key=lambda p: getattr(p, field), reverse=reverse)
+
+
+def paginate_items(items: List[Post], page: int, size: int) -> List[Post]:
+    start = (page - 1) * size
+    end = start + size
+    return items[start:end]
 
 
 # =========================================================
@@ -285,23 +322,10 @@ def list_posts(
         examples=["created_at:desc"],
     ),
 ):
-    items = POSTS[:]
-
-    s = q.strip().lower()
-    if s:
-        items = [
-            p for p in items
-            if (s in p.title.lower() or s in p.author.lower() or s in p.content.lower())
-        ]
-
-    field, direction = parse_sort(sort)
-    reverse = direction == "desc"
-    items.sort(key=lambda p: getattr(p, field), reverse=reverse)
-
+    items = filter_posts(POSTS, q)
+    items = sort_posts(items, sort)
     total = len(items)
-    start = (page - 1) * size
-    end = start + size
-    paged = items[start:end]
+    paged = paginate_items(items, page, size)
 
     return PostListResponse(items=paged, total=total, page=page, size=size)
 

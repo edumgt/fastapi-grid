@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: fastapi_grid_db
+    environment:
+      POSTGRES_DB: app_db
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_user -d app_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    container_name: fastapi_grid_api
+    environment:
+      DATABASE_URL: postgresql+psycopg://app_user:app_password@db:5432/app_db
+      SECRET_KEY: change-me-in-production
+      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

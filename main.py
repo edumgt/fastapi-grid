@@ -1,537 +1,296 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from threading import Lock
-from typing import List, Optional, Literal, Tuple, Iterable
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Generator, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Path, Body, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from pydantic import BaseModel, Field
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-SortField = Literal["id", "title", "author", "created_at", "updated_at", "views"]
-SortDir = Literal["asc", "desc"]
 
-ALLOWED_SORT_FIELDS: Tuple[SortField, ...] = (
-    "id",
-    "title",
-    "author",
-    "created_at",
-    "updated_at",
-    "views",
+# =========================================================
+# Config
+# =========================================================
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg://app_user:app_password@127.0.0.1:5432/app_db",
 )
-ALLOWED_SORT_DIRS: Tuple[SortDir, ...] = ("asc", "desc")
-DEFAULT_SORT: Tuple[SortField, SortDir] = ("created_at", "desc")
-SEED_COUNT = 35
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+engine = create_engine(DATABASE_URL, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
-# =========================================================
-# Swagger(OpenAPI) 메타데이터
-# =========================================================
-openapi_tags = [
-    {"name": "Health", "description": "서버 상태/헬스체크"},
-    {"name": "Posts", "description": "게시글 CRUD 및 검색/정렬/페이징"},
-]
-
-app = FastAPI(
-    title="Board API (FastAPI)",
-    description=(
-        "간단한 게시판 API 샘플입니다.\n\n"
-        "- **검색(q)**: 제목/작성자/본문 포함 검색\n"
-        "- **정렬(sort)**: `필드:asc|desc` (예: `created_at:desc`)\n"
-        "- **페이징(page,size)**: page는 1부터\n"
-        "- **상세조회 inc_view**: 조회수 증가 여부 제어\n"
-    ),
-    version="1.2.0",
-    openapi_tags=openapi_tags,
-)
-
-# =========================================================
-# CORS (HTML 서버가 8001에서 뜬다는 전제)
-# =========================================================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8001", "http://localhost:8001"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-)
-
-# =========================================================
-# Models (Swagger 스키마로 그대로 노출)
-# =========================================================
-class ErrorResponse(BaseModel):
-    detail: str = Field(..., description="에러 메시지", examples=["Post not found"])
+class Base(DeclarativeBase):
+    pass
 
 
-class PostBase(BaseModel):
-    title: str = Field(
-        ...,
-        min_length=1,
-        max_length=120,
-        description="게시글 제목",
-        examples=["AG Grid + FastAPI 샘플 공유합니다"],
-    )
-    author: str = Field(
-        ...,
-        min_length=1,
-        max_length=40,
-        description="작성자",
-        examples=["홍길동"],
-    )
-    content: str = Field(
-        ...,
-        min_length=1,
-        max_length=5000,
-        description="게시글 본문(최대 5000자)",
-        examples=["본문 내용입니다.\n\n- 항목1\n- 항목2"],
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    posts: Mapped[list[Post]] = relationship(back_populates="owner", cascade="all, delete")
+
+
+class Post(Base):
+    __tablename__ = "posts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    views: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    owner: Mapped[User] = relationship(back_populates="posts")
 
-class PostCreate(PostBase):
-    """게시글 생성 요청 바디"""
+
+# =========================================================
+# Pydantic schemas
+# =========================================================
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+
+
+class PostCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=5000)
 
 
 class PostUpdate(BaseModel):
-    title: Optional[str] = Field(
-        None,
-        min_length=1,
-        max_length=120,
-        description="(선택) 제목 수정",
-        examples=["제목을 수정했습니다"],
-    )
-    author: Optional[str] = Field(
-        None,
-        min_length=1,
-        max_length=40,
-        description="(선택) 작성자 수정",
-        examples=["관리자"],
-    )
-    content: Optional[str] = Field(
-        None,
-        min_length=1,
-        max_length=5000,
-        description="(선택) 본문 수정",
-        examples=["본문을 업데이트했습니다."],
-    )
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    content: str | None = Field(default=None, min_length=1, max_length=5000)
 
 
-class Post(PostBase):
-    id: int = Field(..., description="게시글 ID", examples=[1])
-    created_at: datetime = Field(..., description="생성 시각(UTC, ISO8601)", examples=["2026-01-09T00:00:00Z"])
-    updated_at: datetime = Field(..., description="수정 시각(UTC, ISO8601)", examples=["2026-01-09T00:00:00Z"])
-    views: int = Field(0, ge=0, description="조회수", examples=[12])
+class PostOut(BaseModel):
+    id: int
+    title: str
+    content: str
+    views: int
+    owner: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class PostListResponse(BaseModel):
-    items: List[Post] = Field(..., description="현재 페이지 게시글 목록")
-    total: int = Field(..., ge=0, description="검색 조건 포함 전체 게시글 수", examples=[35])
-    page: int = Field(..., ge=1, description="현재 페이지(1부터)", examples=[1])
-    size: int = Field(..., ge=1, le=100, description="페이지 크기", examples=[10])
+    items: list[PostOut]
+    total: int
 
 
 # =========================================================
-# Swagger 예제(Example Responses) - 각 API에 주입
+# App setup
 # =========================================================
-EX_TIME = "2026-01-09T00:00:00Z"
+app = FastAPI(title="FastAPI + PostgreSQL + AG Grid", version="2.0.0")
 
-EX_POST_1 = {
-    "id": 1,
-    "title": "샘플 게시글 1",
-    "author": "홍길동",
-    "content": "샘플 본문입니다. (글 번호: 1)\n\nFastAPI + AG Grid + Tailwind 예시.",
-    "created_at": EX_TIME,
-    "updated_at": EX_TIME,
-    "views": 7,
-}
-
-EX_POST_1_VIEW_INC = {
-    **EX_POST_1,
-    "views": 8,
-    "updated_at": "2026-01-09T00:01:00Z",
-}
-
-EX_POST_LIST = {
-    "items": [
-        EX_POST_1,
-        {
-            "id": 2,
-            "title": "샘플 게시글 2",
-            "author": "홍길동",
-            "content": "샘플 본문입니다. (글 번호: 2)\n\nFastAPI + AG Grid + Tailwind 예시.",
-            "created_at": EX_TIME,
-            "updated_at": EX_TIME,
-            "views": 14,
-        },
-    ],
-    "total": 35,
-    "page": 1,
-    "size": 10,
-}
-
-EX_HEALTH = {"ok": True, "time": EX_TIME}
-EX_DELETE_OK = {"ok": True, "deleted_id": 1}
-EX_404 = {"detail": "Post not found"}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8001", "http://localhost:8001"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# =========================================================
-# In-memory DB (샘플용) + 동시성 Lock
-# =========================================================
-POSTS: List[Post] = []
-NEXT_ID = 1
-DB_LOCK = Lock()
+@app.on_event("startup")
+def startup() -> None:
+    Base.metadata.create_all(bind=engine)
+    seed_data()
+
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def seed() -> None:
-    global NEXT_ID
-    with DB_LOCK:
-        if POSTS:
-            return
-        now = now_utc()
-        for i in range(1, SEED_COUNT + 1):
-            POSTS.append(
-                Post(
-                    id=NEXT_ID,
-                    title=f"샘플 게시글 {i}",
-                    author="관리자" if i % 3 == 0 else "홍길동",
-                    content=f"샘플 본문입니다. (글 번호: {i})\n\nFastAPI + AG Grid + Tailwind 예시.",
-                    created_at=now,
-                    updated_at=now,
-                    views=(i * 7) % 123,
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    return pwd_context.verify(password, password_hash)
+
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
+    to_encode = data.copy()
+    expire = now_utc() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def seed_data() -> None:
+    with SessionLocal() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        if not admin:
+            admin = User(username="admin", password_hash=hash_password("admin1234"))
+            db.add(admin)
+            db.flush()
+
+        exists_post = db.scalar(select(Post).limit(1))
+        if not exists_post:
+            for idx in range(1, 16):
+                db.add(
+                    Post(
+                        title=f"샘플 게시글 {idx}",
+                        content=f"PostgreSQL 연동 샘플 본문입니다. (#{idx})",
+                        views=idx,
+                        owner_id=admin.id,
+                    )
                 )
-            )
-            NEXT_ID += 1
+        db.commit()
 
 
-seed()
-
-
-def get_post_or_404(post_id: int) -> Post:
-    for p in POSTS:
-        if p.id == post_id:
-            return p
-    raise HTTPException(status_code=404, detail="Post not found")
-
-
-def parse_sort(sort: str) -> Tuple[SortField, SortDir]:
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="인증 정보가 유효하지 않습니다.",
+    )
     try:
-        field_str, dir_str = sort.split(":")
-        field = field_str.strip()
-        direction = dir_str.strip().lower()
-        if field not in ALLOWED_SORT_FIELDS:
-            raise ValueError("invalid sort field")
-        if direction not in ALLOWED_SORT_DIRS:
-            raise ValueError("invalid sort direction")
-        return field, direction  # type: ignore[return-value]
-    except Exception:
-        return DEFAULT_SORT
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            raise credentials_exception
+    except JWTError as exc:
+        raise credentials_exception from exc
+
+    user = db.scalar(select(User).where(User.username == username))
+    if not user:
+        raise credentials_exception
+    return user
 
 
-def normalize_query(query: str) -> str:
-    return query.strip().lower()
+def to_post_out(post: Post) -> PostOut:
+    return PostOut(
+        id=post.id,
+        title=post.title,
+        content=post.content,
+        views=post.views,
+        owner=post.owner.username,
+        created_at=post.created_at,
+        updated_at=post.updated_at,
+    )
 
 
-def filter_posts(items: Iterable[Post], query: str) -> List[Post]:
-    s = normalize_query(query)
-    if not s:
-        return list(items)
-    return [
-        p for p in items
-        if (s in p.title.lower() or s in p.author.lower() or s in p.content.lower())
-    ]
-
-
-def sort_posts(items: List[Post], sort: str) -> List[Post]:
-    field, direction = parse_sort(sort)
-    reverse = direction == "desc"
-    return sorted(items, key=lambda p: getattr(p, field), reverse=reverse)
-
-
-def paginate_items(items: List[Post], page: int, size: int) -> List[Post]:
-    start = (page - 1) * size
-    end = start + size
-    return items[start:end]
-
-
-# =========================================================
-# API
-# =========================================================
-@app.get(
-    "/api/health",
-    tags=["Health"],
-    summary="헬스체크",
-    description="서버가 살아있는지 확인합니다.",
-    responses={
-        200: {
-            "description": "OK",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "success": {
-                            "summary": "정상 응답",
-                            "value": EX_HEALTH,
-                        }
-                    }
-                }
-            },
-        }
-    },
-)
-def health():
+@app.get("/api/health")
+def health() -> dict:
     return {"ok": True, "time": now_utc().isoformat()}
 
 
-@app.get(
-    "/api/posts",
-    response_model=PostListResponse,
-    tags=["Posts"],
-    summary="게시글 목록 조회",
-    description="검색(q), 정렬(sort), 페이징(page,size)을 지원합니다.",
-    responses={
-        200: {
-            "description": "OK",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "page1": {
-                            "summary": "목록 조회 예시(1페이지, 2개만 축약)",
-                            "value": EX_POST_LIST,
-                        }
-                    }
-                }
-            },
-        }
-    },
-)
+@app.post("/api/auth/login", response_model=LoginResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
+
+    token = create_access_token({"sub": user.username})
+    return LoginResponse(access_token=token)
+
+
+@app.get("/api/auth/me", response_model=UserResponse)
+def me(current_user: User = Depends(get_current_user)) -> UserResponse:
+    return UserResponse(id=current_user.id, username=current_user.username)
+
+
+@app.get("/api/posts", response_model=PostListResponse)
 def list_posts(
-    q: str = Query(
-        "",
-        title="검색어",
-        description="제목/작성자/본문에서 포함 검색(대소문자 무시)",
-        examples=["홍길동"],
-    ),
-    page: int = Query(1, ge=1, title="페이지", description="1부터 시작", examples=[1]),
-    size: int = Query(10, ge=1, le=100, title="페이지 크기", description="1~100", examples=[10]),
-    sort: str = Query(
-        "created_at:desc",
-        title="정렬",
-        description="형식: `필드:asc|desc` (예: created_at:desc, views:desc, id:asc)",
-        examples=["created_at:desc"],
-    ),
-):
-    items = filter_posts(POSTS, q)
-    items = sort_posts(items, sort)
-    total = len(items)
-    paged = paginate_items(items, page, size)
+    q: str = Query(default="", description="title/content 검색어"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PostListResponse:
+    _ = current_user
+    query = select(Post).join(Post.owner)
+    if q:
+        query = query.where((Post.title.ilike(f"%{q}%")) | (Post.content.ilike(f"%{q}%")))
 
-    return PostListResponse(items=paged, total=total, page=page, size=size)
+    total = len(db.scalars(query).all())
+    rows = db.scalars(
+        query.order_by(Post.id.desc()).offset((page - 1) * size).limit(size)
+    ).all()
+    return PostListResponse(items=[to_post_out(row) for row in rows], total=total)
 
 
-@app.get(
-    "/api/posts/{post_id}",
-    response_model=Post,
-    tags=["Posts"],
-    summary="게시글 상세 조회",
-    description="게시글을 1건 조회합니다. 기본값으로 조회수를 증가시킵니다(inc_view=true).",
-    responses={
-        200: {
-            "description": "OK",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "no_view_inc": {
-                            "summary": "조회수 증가 없이 조회(inc_view=false)",
-                            "value": EX_POST_1,
-                        },
-                        "view_inc": {
-                            "summary": "조회수 증가 포함 조회(inc_view=true)",
-                            "value": EX_POST_1_VIEW_INC,
-                        },
-                    }
-                }
-            },
-        },
-        404: {
-            "model": ErrorResponse,
-            "description": "해당 ID의 게시글이 없음",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "not_found": {"summary": "404 예시", "value": EX_404}
-                    }
-                }
-            },
-        },
-    },
-)
-def read_post(
-    post_id: int = Path(..., ge=1, title="게시글 ID", description="조회할 게시글의 ID", examples=[1]),
-    inc_view: bool = Query(True, title="조회수 증가 여부", description="true면 조회수+1 및 updated_at 갱신", examples=[True]),
-):
-    with DB_LOCK:
-        p = get_post_or_404(post_id)
-        if inc_view:
-            p.views += 1
-            p.updated_at = now_utc()
-        return p
-
-
-@app.post(
-    "/api/posts",
-    response_model=Post,
-    status_code=status.HTTP_201_CREATED,
-    tags=["Posts"],
-    summary="게시글 생성",
-    description="게시글을 생성합니다.",
-    responses={
-        201: {
-            "description": "Created",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "created": {
-                            "summary": "생성 성공 예시",
-                            "value": {
-                                **EX_POST_1,
-                                "id": 36,
-                                "title": "새 글 제목",
-                                "author": "홍길동",
-                                "content": "새 글 본문입니다.",
-                                "views": 0,
-                            },
-                        }
-                    }
-                }
-            },
-        }
-    },
-)
+@app.post("/api/posts", response_model=PostOut, status_code=201)
 def create_post(
-    body: PostCreate = Body(
-        ...,
-        description="생성할 게시글 정보",
-        examples={
-            "create": {
-                "summary": "요청 바디 예시",
-                "value": {"title": "새 글 제목", "author": "홍길동", "content": "새 글 본문입니다."},
-            }
-        },
-    ),
-):
-    global NEXT_ID
-    with DB_LOCK:
-        now = now_utc()
-        p = Post(
-            id=NEXT_ID,
-            title=body.title,
-            author=body.author,
-            content=body.content,
-            created_at=now,
-            updated_at=now,
-            views=0,
-        )
-        POSTS.append(p)
-        NEXT_ID += 1
-        return p
+    payload: PostCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PostOut:
+    post = Post(title=payload.title, content=payload.content, owner_id=current_user.id)
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+    return to_post_out(post)
 
 
-@app.put(
-    "/api/posts/{post_id}",
-    response_model=Post,
-    tags=["Posts"],
-    summary="게시글 수정",
-    description="게시글을 수정합니다. `PostUpdate`에서 전달된 필드만 반영합니다.",
-    responses={
-        200: {
-            "description": "OK",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "updated": {
-                            "summary": "수정 성공 예시(제목만 수정)",
-                            "value": {
-                                **EX_POST_1,
-                                "title": "제목을 수정했습니다",
-                                "updated_at": "2026-01-09T00:02:00Z",
-                            },
-                        }
-                    }
-                }
-            },
-        },
-        404: {
-            "model": ErrorResponse,
-            "description": "해당 ID의 게시글이 없음",
-            "content": {
-                "application/json": {
-                    "examples": {"not_found": {"summary": "404 예시", "value": EX_404}}
-                }
-            },
-        },
-    },
-)
+@app.put("/api/posts/{post_id}", response_model=PostOut)
 def update_post(
-    post_id: int = Path(..., ge=1, title="게시글 ID", description="수정할 게시글의 ID", examples=[1]),
-    body: PostUpdate = Body(
-        ...,
-        description="수정할 필드(보낸 것만 반영)",
-        examples={
-            "update_title": {
-                "summary": "요청 바디 예시(제목만 수정)",
-                "value": {"title": "제목을 수정했습니다"},
-            },
-            "update_all": {
-                "summary": "요청 바디 예시(여러 필드 수정)",
-                "value": {"title": "수정 제목", "author": "관리자", "content": "수정 본문"},
-            },
-        },
-    ),
-):
-    with DB_LOCK:
-        p = get_post_or_404(post_id)
-        data = body.model_dump(exclude_unset=True)
+    post_id: int,
+    payload: PostUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PostOut:
+    post = db.get(Post, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="게시글을 찾을 수 없습니다.")
+    if post.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="본인 글만 수정할 수 있습니다.")
 
-        for k, v in data.items():
-            setattr(p, k, v)
+    if payload.title is not None:
+        post.title = payload.title
+    if payload.content is not None:
+        post.content = payload.content
 
-        p.updated_at = now_utc()
-        return p
+    db.commit()
+    db.refresh(post)
+    return to_post_out(post)
 
 
-@app.delete(
-    "/api/posts/{post_id}",
-    tags=["Posts"],
-    summary="게시글 삭제",
-    description="게시글을 삭제합니다.",
-    responses={
-        200: {
-            "description": "OK",
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "deleted": {"summary": "삭제 성공 예시", "value": EX_DELETE_OK}
-                    }
-                }
-            },
-        },
-        404: {
-            "model": ErrorResponse,
-            "description": "해당 ID의 게시글이 없음",
-            "content": {
-                "application/json": {
-                    "examples": {"not_found": {"summary": "404 예시", "value": EX_404}}
-                }
-            },
-        },
-    },
-)
+@app.delete("/api/posts/{post_id}")
 def delete_post(
-    post_id: int = Path(..., ge=1, title="게시글 ID", description="삭제할 게시글의 ID", examples=[1]),
-):
-    with DB_LOCK:
-        p = get_post_or_404(post_id)
-        POSTS.remove(p)
-        return {"ok": True, "deleted_id": post_id}
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    post = db.get(Post, post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="게시글을 찾을 수 없습니다.")
+    if post.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="본인 글만 삭제할 수 있습니다.")
+
+    db.delete(post)
+    db.commit()
+    return {"ok": True, "deleted_id": post_id}

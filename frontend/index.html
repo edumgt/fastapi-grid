@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FastAPI + PostgreSQL + AG Grid</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-alpine.css" />
+</head>
+
+<body class="bg-slate-50 min-h-screen">
+  <main class="max-w-6xl mx-auto p-6 space-y-4">
+    <h1 class="text-2xl font-bold">FastAPI + Docker PostgreSQL + AG Grid</h1>
+
+    <section id="loginView" class="bg-white p-4 rounded-xl shadow-sm border w-full md:w-96 space-y-3">
+      <h2 class="font-semibold">로그인</h2>
+      <input id="username" class="w-full border rounded px-3 py-2" value="admin" placeholder="아이디" />
+      <input id="password" type="password" class="w-full border rounded px-3 py-2" value="admin1234" placeholder="비밀번호" />
+      <button id="btnLogin" class="w-full bg-indigo-600 text-white rounded px-3 py-2">로그인</button>
+      <p id="loginMsg" class="text-sm text-rose-600 min-h-5"></p>
+    </section>
+
+    <section id="appView" class="hidden space-y-3">
+      <div class="bg-white p-4 rounded-xl shadow-sm border flex flex-wrap gap-2 items-center">
+        <span id="me" class="text-sm font-medium"></span>
+        <input id="search" class="border rounded px-3 py-2 text-sm" placeholder="검색어" />
+        <button id="btnSearch" class="px-3 py-2 rounded bg-slate-800 text-white text-sm">검색</button>
+        <button id="btnNew" class="px-3 py-2 rounded bg-emerald-600 text-white text-sm">새 글</button>
+        <button id="btnLogout" class="px-3 py-2 rounded bg-slate-200 text-sm">로그아웃</button>
+      </div>
+
+      <p id="appMsg" class="text-sm text-rose-600 min-h-5"></p>
+      <div id="grid" class="ag-theme-alpine w-full" style="height: 520px;"></div>
+    </section>
+  </main>
+
+  <dialog id="editor" class="rounded-xl p-0 w-full max-w-xl">
+    <form method="dialog" class="p-4 space-y-3">
+      <h3 id="editorTitle" class="font-semibold">게시글</h3>
+      <input id="postTitle" class="w-full border rounded px-3 py-2" placeholder="제목" maxlength="120" />
+      <textarea id="postContent" class="w-full border rounded px-3 py-2" rows="8" placeholder="내용" maxlength="5000"></textarea>
+      <div class="flex justify-end gap-2">
+        <button class="px-3 py-2 rounded bg-slate-200">취소</button>
+        <button id="btnSave" value="default" class="px-3 py-2 rounded bg-indigo-600 text-white">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./assets/app.js" defer></script>
+</body>
+
+</html>

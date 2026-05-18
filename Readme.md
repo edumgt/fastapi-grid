@@ -56,15 +56,18 @@ docker compose up --build
 python -m http.server 8001
 ```
 
-브라우저에서 `http://127.0.0.1:8001/index.html` 접속.
+브라우저에서 `http://127.0.0.1:8001/frontend/index.html` 접속.
 
 ## 기본 계정
 - username: `admin`
 - password: `admin1234`
 
 ## 주요 파일
-- `main.py`: FastAPI 앱, 인증, DB 모델/CRUD
-- `index.html`: 로그인 + AG Grid SPA
+- `backend/main.py`: FastAPI 앱, 인증, DB 모델/CRUD
+- `main.py`: 레거시 엔트리포인트 호환용(app 재노출)
+- `frontend/index.html`: 로그인 + AG Grid SPA 화면
+- `frontend/assets/app.js`: 프론트엔드 동작 로직
+- `frontend/legacy/index2.html`: 기존 실험 UI 샘플
 - `docker-compose.yml`: PostgreSQL/API 컨테이너 구성
 - `Dockerfile`: FastAPI 컨테이너 빌드
 - `.env.example`: 실행 환경 변수 예시
@@ -72,7 +75,8 @@ python -m http.server 8001
 ## API 요약
 - `POST /api/auth/login`: 로그인 + JWT 발급
 - `GET /api/auth/me`: 내 정보 조회
-- `GET /api/posts`: 게시글 목록(검색 `q`, 페이징 `page/size`)
+- `GET /api/posts`: 게시글 목록(검색 `q`, 페이징 `page/size`, 정렬 `sort`)
+- `GET /api/posts/{id}`: 게시글 상세 조회(`inc_view=true` 시 조회수 증가)
 - `POST /api/posts`: 게시글 생성
 - `PUT /api/posts/{id}`: 게시글 수정(본인 글)
 - `DELETE /api/posts/{id}`: 게시글 삭제(본인 글)

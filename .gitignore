@@ -57,7 +57,6 @@ Desktop.ini
 # Local env / secrets
 # =========================
 .env
-.env.*
 *.pem
 *.key
 *.crt

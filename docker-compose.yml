@@ -20,10 +20,11 @@ services:
     build: .
     container_name: fastapi_grid_api
     environment:
-      DATABASE_URL: postgresql+psycopg://app_user:app_password@db:5432/app_db
-      SECRET_KEY: change-me-in-production
-      ACCESS_TOKEN_EXPIRE_MINUTES: 60
-      ALLOWED_ORIGINS: http://127.0.0.1:8001,http://localhost:8001
+      APP_DATABASE_URL: postgresql+psycopg://app_user:app_password@db:5432/app_db
+      APP_POSTGRESQL_DSN: postgresql+psycopg://app_user:app_password@db:5432/app_db
+      APP_SECRET_KEY: change-me-in-production
+      APP_ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      APP_ALLOWED_ORIGINS: http://127.0.0.1:8001,http://localhost:8001
     ports:
       - "8000:8000"
     depends_on:

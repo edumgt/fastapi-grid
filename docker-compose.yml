@@ -1,35 +1,18 @@
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: fastapi_grid_db
-    environment:
-      POSTGRES_DB: app_db
-      POSTGRES_USER: app_user
-      POSTGRES_PASSWORD: app_password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app_user -d app_db"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   api:
     build: .
     container_name: fastapi_grid_api
     environment:
-      APP_DATABASE_URL: postgresql+psycopg://app_user:app_password@db:5432/app_db
-      APP_POSTGRESQL_DSN: postgresql+psycopg://app_user:app_password@db:5432/app_db
+      APP_DATABASE_URL: postgresql+psycopg://grid_user:grid_password@postgres:5432/grid_db
+      APP_POSTGRESQL_DSN: postgresql+psycopg://grid_user:grid_password@postgres:5432/grid_db
       APP_SECRET_KEY: change-me-in-production
       APP_ACCESS_TOKEN_EXPIRE_MINUTES: 60
       APP_ALLOWED_ORIGINS: http://127.0.0.1:8001,http://localhost:8001
     ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
+      - "8010:8000"
+    networks:
+      - shared-net
 
-volumes:
-  postgres_data:
+networks:
+  shared-net:
+    external: true

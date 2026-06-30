@@ -43,6 +43,32 @@ class Settings(BaseSettings):
     neo4j_database: str = "neo4j"
     neo4j_graph_name: str = "lab_graph"
 
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
+    redis_key_prefix: str = "lab_record:"
+
+    # OpenSearch
+    opensearch_url: str = "http://localhost:9200"
+    opensearch_index_name: str = "lab_records"
+
+    # ClickHouse
+    clickhouse_host: str = "localhost"
+    clickhouse_port: int = 8123
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "default"
+    clickhouse_table_name: str = "lab_records"
+
+    # Cassandra
+    cassandra_hosts: str = "127.0.0.1"
+    cassandra_port: int = 9042
+    cassandra_keyspace: str = "lab_keyspace"
+    cassandra_table_name: str = "lab_records"
+
+    # Qdrant (vector_provider 의 추가 옵션)
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_collection_name: str = "lab-vectors"
+
     model_config = SettingsConfigDict(env_prefix="APP_", env_file=".env", extra="ignore")
 
 

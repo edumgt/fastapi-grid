@@ -4,6 +4,7 @@ sqlalchemy==2.0.36
 psycopg[binary]==3.2.3
 python-jose==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 pydantic-settings==2.8.1
 boto3==1.37.10
 pymongo==4.10.1
@@ -11,3 +12,8 @@ supabase==2.11.0
 pinecone==5.4.2
 weaviate-client==4.9.6
 neo4j==5.26.0
+redis==5.2.1
+opensearch-py==2.8.0
+clickhouse-connect==0.8.11
+cassandra-driver==3.29.2
+qdrant-client==1.12.1

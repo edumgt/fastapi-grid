@@ -1,7 +1,7 @@
 # FastAPI Grid Lab
 
-FastAPI 백엔드에 **PostgreSQL · MongoDB · DynamoDB · Supabase · Pinecone · Weaviate · Neo4j** 를 통합한 멀티-데이터베이스 실습 프로젝트입니다.  
-프론트엔드는 HTML + 바닐라 JS SPA로 로그인 및 AG Grid CRUD를 제공합니다.
+FastAPI 백엔드에 **PostgreSQL · MongoDB · DynamoDB · Supabase · Pinecone · Weaviate · Neo4j · Redis · OpenSearch · ClickHouse · Cassandra · Qdrant** 를 통합한 멀티-데이터베이스 실습 프로젝트입니다.  
+프론트엔드는 HTML + 바닐라 JS SPA로 로그인, AG Grid CRUD, 그리고 **Canvas 기반 멀티 DB 엔진**(DB 아이콘을 캔버스에서 Grid 노드에 연결하면 해당 DB의 데이터를 가져와 그리드에 합쳐 보여주는 화면)을 제공합니다.
 
 ---
 
@@ -18,10 +18,16 @@ FastAPI 백엔드에 **PostgreSQL · MongoDB · DynamoDB · Supabase · Pinecone
    - [Pinecone (Vector DB)](#6-pinecone-vector-db)
    - [Weaviate (Vector DB)](#7-weaviate-vector-db)
    - [Neo4j · GDS (Graph DB)](#8-neo4j--gds-graph-db)
+   - [Redis (Key-Value)](#9-redis-key-value)
+   - [OpenSearch (검색/분석)](#10-opensearch-검색분석)
+   - [ClickHouse (OLAP)](#11-clickhouse-olap)
+   - [Cassandra (Wide-column)](#12-cassandra-wide-column)
+   - [Qdrant (Vector DB)](#13-qdrant-vector-db)
 4. [환경변수](#환경변수)
 5. [프로젝트 구조](#프로젝트-구조)
 6. [실행 방법](#실행-방법)
 7. [API 요약](#api-요약)
+8. [멀티 DB 엔진 (Canvas)](#멀티-db-엔진-canvas)
 
 ---
 
@@ -44,6 +50,11 @@ FastAPI 백엔드에 **PostgreSQL · MongoDB · DynamoDB · Supabase · Pinecone
 | Vector DB (cloud) | pinecone | 5.4 | 벡터 저장·검색 |
 | Vector DB (self-host) | weaviate-client | 4.9 | 벡터 저장·검색 |
 | Graph DB | neo4j | 5.26 | 그래프 저장·분석 |
+| Key-Value (OSS) | redis | 5.2 | 캐시/키-값 저장 |
+| 검색 엔진 (OSS) | opensearch-py | 2.8 | 문서 검색·인덱싱 |
+| OLAP (OSS) | clickhouse-connect | 0.8 | 컬럼형 분석 DB |
+| Wide-column (OSS) | cassandra-driver | 3.29 | CQL 기반 wide-column 저장 |
+| Vector DB (OSS) | qdrant-client | 1.12 | 벡터 저장·검색 |
 
 ### Database
 | 유형 | 기술 | 역할 |
@@ -55,6 +66,11 @@ FastAPI 백엔드에 **PostgreSQL · MongoDB · DynamoDB · Supabase · Pinecone
 | Vector | Pinecone | 클라우드 벡터 인덱스 |
 | Vector | Weaviate | 로컬 벡터 컬렉션 |
 | Graph | Neo4j | Entity 노드·관계·GDS 분석 |
+| Key-Value (OSS) | Redis | lab_records 형태 레코드 (JSON 문자열) |
+| 검색/분석 (OSS) | OpenSearch | lab_records 인덱스 |
+| OLAP (OSS) | ClickHouse | lab_records 테이블 (MergeTree) |
+| Wide-column (OSS) | Cassandra | lab_records 테이블 (CQL) |
+| Vector (OSS) | Qdrant | 로컬 벡터 컬렉션 |
 
 ### Frontend
 | 분류 | 기술 | 용도 |
@@ -622,6 +638,202 @@ APP_NEO4J_GRAPH_NAME=lab_graph
 
 ---
 
+### 9. Redis (Key-Value)
+
+**역할:** lab_records 와 동일한 구조(id/title/content/tags)의 레코드를 키-값으로 저장 (캐시/세션에 가장 널리 쓰이는 OSS 인메모리 DB)
+
+#### 연결 및 저장 방식
+
+```python
+# backend/api/lab_router.py
+import redis
+
+@lru_cache
+def _redis_client():
+    return redis.from_url(settings.redis_url, decode_responses=True)
+
+# key = "lab_record:{id}", value = JSON 문자열
+client.set(f"{settings.redis_key_prefix}{data['id']}", json.dumps(data))
+```
+
+목록 조회는 `SCAN MATCH "lab_record:*"` 로 키를 모은 뒤 `MGET` 으로 일괄 조회합니다 (`KEYS` 는 블로킹이라 프로덕션에서 지양).
+
+#### Docker 실행
+
+```bash
+docker run -d -p 6379:6379 redis:7
+```
+
+#### 필요 환경변수
+
+```
+APP_REDIS_URL=redis://localhost:6379/0
+APP_REDIS_KEY_PREFIX=lab_record:
+```
+
+---
+
+### 10. OpenSearch (검색/분석)
+
+**역할:** lab_records 문서를 검색 인덱스에 저장·검색 (Elasticsearch 라이선스 이슈로 OSS 진영에서 널리 채택된 포크)
+
+#### 연결 및 색인
+
+```python
+from opensearchpy import OpenSearch
+
+@lru_cache
+def _opensearch_client():
+    return OpenSearch(hosts=[settings.opensearch_url])
+
+client.index(index=settings.opensearch_index_name, id=data["id"], body=data, refresh=True)
+```
+
+조회는 `match_all` 쿼리로 전체 검색, 수정은 `update` API 의 `doc` 부분 업데이트를 사용합니다.
+
+#### Docker 실행
+
+```bash
+docker run -d -p 9200:9200 \
+  -e "discovery.type=single-node" \
+  -e "DISABLE_SECURITY_PLUGIN=true" \
+  opensearchproject/opensearch:2.15.0
+```
+
+#### 필요 환경변수
+
+```
+APP_OPENSEARCH_URL=http://localhost:9200
+APP_OPENSEARCH_INDEX_NAME=lab_records
+```
+
+---
+
+### 11. ClickHouse (OLAP)
+
+**역할:** lab_records 를 컬럼형 테이블에 저장 (최근 가장 빠르게 성장한 OSS 분석/OLAP DB)
+
+#### 연결 및 테이블 생성
+
+```python
+import clickhouse_connect
+
+client = clickhouse_connect.get_client(
+    host=settings.clickhouse_host, port=settings.clickhouse_port,
+    username=settings.clickhouse_user, password=settings.clickhouse_password,
+)
+client.command("""
+    CREATE TABLE IF NOT EXISTS lab_records
+    (id String, title String, content String, tags Array(String))
+    ENGINE = MergeTree ORDER BY id
+""")
+```
+
+ClickHouse 는 OLAP 특성상 행 단위 UPDATE/DELETE 가 비동기 mutation 이므로, `ALTER TABLE ... UPDATE/DELETE ... WHERE id = ...` 를 `settings={"mutations_sync": 1}` 로 동기 실행해 CRUD 응답을 즉시 반환합니다.
+
+#### Docker 실행
+
+```bash
+docker run -d -p 8123:8123 -p 9000:9000 clickhouse/clickhouse-server:24
+```
+
+#### 필요 환경변수
+
+```
+APP_CLICKHOUSE_HOST=localhost
+APP_CLICKHOUSE_PORT=8123
+APP_CLICKHOUSE_USER=default
+APP_CLICKHOUSE_PASSWORD=
+APP_CLICKHOUSE_DATABASE=default
+APP_CLICKHOUSE_TABLE_NAME=lab_records
+```
+
+---
+
+### 12. Cassandra (Wide-column)
+
+**역할:** lab_records 를 CQL 테이블에 저장 (DynamoDB 와 동일한 wide-column 카테고리의 완전 오픈소스 대안)
+
+#### 연결 및 스키마 생성
+
+```python
+from cassandra.cluster import Cluster
+
+cluster = Cluster(settings.cassandra_hosts.split(","), port=settings.cassandra_port)
+session = cluster.connect()
+session.execute("""
+    CREATE KEYSPACE IF NOT EXISTS lab_keyspace
+    WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
+""")
+session.execute("""
+    CREATE TABLE IF NOT EXISTS lab_records
+    (id text PRIMARY KEY, title text, content text, tags list<text>)
+""")
+```
+
+CQL `INSERT`/`SELECT`/`UPDATE`/`DELETE` 로 일반 CRUD 와 동일하게 동작합니다.
+
+#### Docker 실행
+
+```bash
+docker run -d -p 9042:9042 cassandra:5
+```
+
+#### 필요 환경변수
+
+```
+APP_CASSANDRA_HOSTS=127.0.0.1
+APP_CASSANDRA_PORT=9042
+APP_CASSANDRA_KEYSPACE=lab_keyspace
+APP_CASSANDRA_TABLE_NAME=lab_records
+```
+
+---
+
+### 13. Qdrant (Vector DB)
+
+**역할:** 벡터 임베딩을 로컬/자체 호스팅 컬렉션에 upsert·유사도 검색 (최근 가장 인기 있는 OSS 벡터 DB). `APP_VECTOR_PROVIDER` 의 3번째 옵션으로 Pinecone·Weaviate 와 동일한 `/lab/vector/*` 엔드포인트를 공유합니다.
+
+#### 연결
+
+```python
+from qdrant_client import QdrantClient
+
+@lru_cache
+def _qdrant_client():
+    return QdrantClient(url=settings.qdrant_url)
+```
+
+#### Upsert / Query
+
+```python
+# uuid5 로 결정적 UUID 생성 (Weaviate 와 동일한 패턴), 원본 id 는 payload.external_id 로 보관
+point_uuid = str(uuid.uuid5(QDRANT_UUID_NAMESPACE, payload.id))
+client.upsert(collection_name=settings.qdrant_collection_name, points=[
+    PointStruct(id=point_uuid, vector=payload.values, payload={"external_id": payload.id, **payload.metadata}),
+])
+
+result = client.query_points(collection_name=settings.qdrant_collection_name, query=payload.values, limit=payload.top_k)
+```
+
+#### Docker 실행
+
+```bash
+docker run -d -p 6333:6333 qdrant/qdrant:v1.12.1
+```
+
+#### 필요 환경변수
+
+```
+APP_VECTOR_PROVIDER=qdrant
+APP_QDRANT_URL=http://localhost:6333
+APP_QDRANT_COLLECTION_NAME=lab-vectors
+```
+
+> `APP_VECTOR_PROVIDER` 값으로 `pinecone` · `weaviate` · `qdrant` 중 하나를 선택합니다.
+
+---
+
 ## 환경변수
 
 모든 환경변수는 `APP_` 접두사를 사용합니다. `.env.example`을 복사해 사용하세요.
@@ -657,6 +869,22 @@ cp .env.example .env
 | `APP_NEO4J_PASSWORD` | `password` | Neo4j 비밀번호 |
 | `APP_NEO4J_DATABASE` | `neo4j` | Neo4j 데이터베이스명 |
 | `APP_NEO4J_GRAPH_NAME` | `lab_graph` | GDS 프로젝션 이름 |
+| `APP_REDIS_URL` | `redis://localhost:6379/0` | Redis 연결 URL |
+| `APP_REDIS_KEY_PREFIX` | `lab_record:` | Redis 레코드 키 접두사 |
+| `APP_OPENSEARCH_URL` | `http://localhost:9200` | OpenSearch 서버 URL |
+| `APP_OPENSEARCH_INDEX_NAME` | `lab_records` | OpenSearch 인덱스명 |
+| `APP_CLICKHOUSE_HOST` | `localhost` | ClickHouse 호스트 |
+| `APP_CLICKHOUSE_PORT` | `8123` | ClickHouse HTTP 포트 |
+| `APP_CLICKHOUSE_USER` | `default` | ClickHouse 사용자 |
+| `APP_CLICKHOUSE_PASSWORD` | _(빈 값)_ | ClickHouse 비밀번호 |
+| `APP_CLICKHOUSE_DATABASE` | `default` | ClickHouse 데이터베이스명 |
+| `APP_CLICKHOUSE_TABLE_NAME` | `lab_records` | ClickHouse 테이블명 |
+| `APP_CASSANDRA_HOSTS` | `127.0.0.1` | Cassandra 호스트(쉼표 구분) |
+| `APP_CASSANDRA_PORT` | `9042` | Cassandra 포트 |
+| `APP_CASSANDRA_KEYSPACE` | `lab_keyspace` | Cassandra 키스페이스 |
+| `APP_CASSANDRA_TABLE_NAME` | `lab_records` | Cassandra 테이블명 |
+| `APP_QDRANT_URL` | `http://localhost:6333` | Qdrant 서버 URL |
+| `APP_QDRANT_COLLECTION_NAME` | `lab-vectors` | Qdrant 컬렉션명 |
 
 ---
 
@@ -665,7 +893,7 @@ cp .env.example .env
 ```
 grid-lab/
 ├── backend/
-│   ├── main.py              # FastAPI 앱 진입점
+│   ├── main.py              # FastAPI 앱 진입점 (frontend/ 정적 파일 마운트 포함)
 │   ├── config/
 │   │   ├── settings.py      # 전체 환경변수 정의
 │   │   └── database.py      # SQLAlchemy + DynamoDB 팩토리
@@ -689,8 +917,10 @@ grid-lab/
 │       ├── employee_router.py   # /employees/*
 │       └── lab_router.py        # /lab/*
 ├── frontend/
-│   ├── index.html
-│   └── assets/app.js
+│   ├── index.html            # 게시글 CRUD 탭 + 멀티 DB 엔진(Canvas) 탭
+│   └── assets/
+│       ├── app.js            # 게시글 CRUD 로직
+│       └── engine.js         # Canvas 기반 멀티 DB 엔진 로직
 ├── main.py                  # 레거시 호환용 엔트리포인트
 ├── Dockerfile
 ├── docker-compose.yml
@@ -702,22 +932,25 @@ grid-lab/
 
 ## 실행 방법
 
-### 1) PostgreSQL + API (Docker Compose)
+프론트엔드(`frontend/`)는 FastAPI 백엔드가 정적 파일로 직접 서빙합니다 (`backend/main.py` 의 `StaticFiles` 마운트). 별도의 프론트엔드 서버를 띄울 필요가 없습니다.
+
+### 1) PostgreSQL + API + 프론트엔드 (Docker Compose, 권장)
 
 ```bash
 docker compose up --build
 ```
 
-- API: http://127.0.0.1:8000
-- Swagger: http://127.0.0.1:8000/docs
+- 통합 앱(프론트엔드 + API): http://127.0.0.1:8010
+- Swagger: http://127.0.0.1:8010/docs
 
-### 2) 프론트엔드
+### 2) 로컬에서 직접 실행 (Docker 없이)
 
 ```bash
-python -m http.server 8001
+uvicorn backend.main:app --reload
 ```
 
-브라우저에서 `http://127.0.0.1:8001/frontend/index.html` 접속.
+- 통합 앱(프론트엔드 + API): http://127.0.0.1:8000
+- Swagger: http://127.0.0.1:8000/docs
 
 ### 3) 외부 서비스 (선택)
 
@@ -736,6 +969,23 @@ docker run -d -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/password \
   -e NEO4J_PLUGINS='["graph-data-science"]' \
   neo4j:5.26
+
+# Redis
+docker run -d -p 6379:6379 redis:7
+
+# OpenSearch
+docker run -d -p 9200:9200 \
+  -e "discovery.type=single-node" -e "DISABLE_SECURITY_PLUGIN=true" \
+  opensearchproject/opensearch:2.15.0
+
+# ClickHouse
+docker run -d -p 8123:8123 -p 9000:9000 clickhouse/clickhouse-server:24
+
+# Cassandra
+docker run -d -p 9042:9042 cassandra:5
+
+# Qdrant
+docker run -d -p 6333:6333 qdrant/qdrant:v1.12.1
 ```
 
 Supabase · Pinecone · DynamoDB는 각 클라우드 콘솔에서 자격증명을 발급받아 `.env`에 입력하세요.
@@ -802,11 +1052,47 @@ Supabase · Pinecone · DynamoDB는 각 클라우드 콘솔에서 자격증명�
 | `PATCH` | `/lab/supabase/records/{id}` | 부분 수정 |
 | `DELETE` | `/lab/supabase/records/{id}` | 삭제 |
 
-### Lab — Vector DB (Pinecone / Weaviate)
+### Lab — Redis
 
 | 메서드 | 경로 | 설명 |
 |---|---|---|
-| `POST` | `/lab/vector/upsert` | 벡터 저장 |
+| `POST` | `/lab/redis/records` | 레코드 생성 |
+| `GET` | `/lab/redis/records` | 목록 조회 |
+| `PATCH` | `/lab/redis/records/{id}` | 부분 수정 |
+| `DELETE` | `/lab/redis/records/{id}` | 삭제 |
+
+### Lab — OpenSearch
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` | `/lab/opensearch/records` | 레코드 생성 |
+| `GET` | `/lab/opensearch/records` | 목록 조회 |
+| `PATCH` | `/lab/opensearch/records/{id}` | 부분 수정 |
+| `DELETE` | `/lab/opensearch/records/{id}` | 삭제 |
+
+### Lab — ClickHouse
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` | `/lab/clickhouse/records` | 레코드 생성 |
+| `GET` | `/lab/clickhouse/records` | 목록 조회 |
+| `PATCH` | `/lab/clickhouse/records/{id}` | 부분 수정 |
+| `DELETE` | `/lab/clickhouse/records/{id}` | 삭제 |
+
+### Lab — Cassandra
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` | `/lab/cassandra/records` | 레코드 생성 |
+| `GET` | `/lab/cassandra/records` | 목록 조회 |
+| `PATCH` | `/lab/cassandra/records/{id}` | 부분 수정 |
+| `DELETE` | `/lab/cassandra/records/{id}` | 삭제 |
+
+### Lab — Vector DB (Pinecone / Weaviate / Qdrant)
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` | `/lab/vector/upsert` | 벡터 저장 (`APP_VECTOR_PROVIDER=pinecone\|weaviate\|qdrant`) |
 | `POST` | `/lab/vector/query` | 유사도 검색 |
 
 ### Lab — Neo4j Graph
@@ -818,3 +1104,14 @@ Supabase · Pinecone · DynamoDB는 각 클라우드 콘솔에서 자격증명�
 | `POST` | `/lab/graph/analyze` | GDS 분석 (`pagerank` \| `degree`) |
 
 전체 API 문서: http://127.0.0.1:8000/docs (Swagger UI)
+
+---
+
+## 멀티 DB 엔진 (Canvas)
+
+로그인 후 상단의 `멀티 DB 엔진` 탭에서 Canvas 기반으로 여러 DB를 동시에 연결해 하나의 AG Grid 로 데이터를 합쳐 볼 수 있습니다.
+
+- **팔레트**: PostgreSQL · MongoDB · Supabase · Redis · OpenSearch · ClickHouse · Cassandra · DynamoDB · Pinecone · Weaviate · Neo4j · Qdrant 12개 DB 아이콘이 표시됩니다.
+- **호환 DB** (실선 테두리): PostgreSQL, MongoDB, Supabase, Redis, OpenSearch, ClickHouse, Cassandra — 모두 `id/title/content/tags` 와 동일한 레코드 구조(`/lab/<db>/records`)를 가지므로 Canvas 의 Grid 노드에 연결하면 데이터를 가져와 그리드에 합쳐 보여줍니다.
+- **비호환 DB** (점선 테두리): DynamoDB(Employee), Pinecone/Weaviate/Qdrant(Vector), Neo4j(Graph) — 레코드 구조가 달라 팔레트에는 표시되지만 Grid 노드에 연결을 시도하면 "구조가 달라 연결할 수 없습니다" 안내만 표시됩니다.
+- **사용 방법**: 팔레트에서 DB 아이콘을 클릭해 캔버스에 노드를 추가 → 노드의 연결 핸들을 Grid 노드까지 드래그 → 연결되면 해당 DB의 레코드를 조회해(데이터가 없으면 샘플 3건을 자동 생성) 그리드에 `source` 컬럼과 함께 합쳐서 표시합니다. 여러 DB를 동시에 연결하면 모든 source 의 행이 하나의 그리드에 누적됩니다. 노드/연결을 삭제하면 해당 source 의 행만 그리드에서 제거됩니다. 캔버스 레이아웃(노드 위치·연결 상태)은 브라우저 `localStorage` 에 저장되어 새로고침해도 유지됩니다.

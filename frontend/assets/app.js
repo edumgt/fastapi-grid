@@ -1,4 +1,4 @@
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "";
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -178,6 +178,7 @@ function logout() {
 
 function initGrid() {
   const gridOptions = {
+    theme: "legacy",
     columnDefs,
     rowData: [],
     defaultColDef: { sortable: true, resizable: true },
